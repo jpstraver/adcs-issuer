@@ -24,6 +24,7 @@ bin
 *~
 .vs
 .vscode
+.env
 
 examples/*
 issuers/testdata/ca/
