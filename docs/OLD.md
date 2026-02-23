@@ -7,7 +7,7 @@ ADCS provides HTTP GUI that can be normally used to request new certificates or 
 This implementation is simply a HTTP client that interacts with the ADCS server sending appropriately prepared HTTP requests and interpretting the server's HTTP responses
 (the approach inspired by [this Python ADCS client](https://github.com/magnuswatn/certsrv)).
 
-It supports NTLM authentication.
+It supports NTLM and Kerberos authentication.
 
 
 Build statuses:
@@ -59,6 +59,7 @@ metadata:
   name: test-adcs
   namespace: <namespace>
 spec:
+  authType: ntlm
   caBundle: <base64-encoded-ca-certificate>
   credentialsRef:
     name: test-adcs-issuer-credentials
@@ -74,13 +75,14 @@ The `statusCheckInterval` indicates how often the status of the request should b
 
 The `retryInterval` says how long to wait before retrying requests that errored.
 
-The `credentialsRef.name` is name of a secret that stores user credentials used for NTLM authentication. The secret must be `Opaque` and contain `password` and `username` fields only e.g.:
+The `credentialsRef.name` is name of a secret that stores user credentials used for ADCS authentication. The secret must be `Opaque` and contain `password` and `username` fields. If `authType: kerberos` is used, it must also contain a `realm` field e.g.:
 
 ```
 apiVersion: v1
 data:
   password: cGFzc3dvcmQ=
   username: dXNlcm5hbWU=
+  realm: RVhBTVBMRS5DT00= # Required only for authType: kerberos
 kind: Secret
 metadata:
   name: test-adcs-issuer-credentials
@@ -96,6 +98,7 @@ kind: ClusterAdcsIssuer
 metadata:
   name: test-adcs
 spec:
+  authType: ntlm
   caBundle: <base64-encoded-ca-certificate>
   credentialsRef:
     name: test-adcs-issuer-credentials

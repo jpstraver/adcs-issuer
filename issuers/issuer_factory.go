@@ -22,6 +22,8 @@ import (
 const (
 	defaultStatusCheckInterval = "6h"
 	defaultRetryInterval       = "1h"
+	authModeNTLM               = "ntlm"
+	authModeKerberos           = "kerberos"
 )
 
 type IssuerFactory struct {
@@ -53,7 +55,12 @@ func (f *IssuerFactory) getAdcsIssuer(ctx context.Context, key client.ObjectKey)
 	}
 	// TODO: add checking issuer status
 
-	username, password, realm, pwError := f.getUserPassword(ctx, issuer.Spec.CredentialsRef.Name, issuer.Namespace)
+	authMode, err := resolveAuthMode(issuer.Spec.AuthType)
+	if err != nil {
+		return nil, err
+	}
+
+	username, password, realm, pwError := f.getUserPassword(ctx, issuer.Spec.CredentialsRef.Name, issuer.Namespace, authMode)
 	if pwError != nil {
 		return nil, pwError
 	}
@@ -69,16 +76,15 @@ func (f *IssuerFactory) getAdcsIssuer(ctx context.Context, key client.ObjectKey)
 		return nil, fmt.Errorf("error loading ADCS CA bundle")
 	}
 
-	authMode := os.Getenv("ADCS_AUTH_MODE")
 	var (
 		certServ adcs.AdcsCertsrv
 		adcsErr  error
 	)
 
-	// Choose method based on env
-	if authMode == "kerberos" {
+	// Choose method based on issuer spec (or env fallback)
+	if authMode == authModeKerberos {
 		certServ, adcsErr = adcs.NewKerberosCertsrv(issuer.Spec.URL, username, realm, password, caCertPool, false)
-	} else { // default is ntlm
+	} else { // default is NTLM
 		certServ, adcsErr = adcs.NewNtlmCertsrv(issuer.Spec.URL, username, password, caCertPool, false)
 	}
 	if adcsErr != nil {
@@ -117,7 +123,12 @@ func (f *IssuerFactory) getClusterAdcsIssuer(ctx context.Context, key client.Obj
 	}
 	// TODO: add checking issuer status
 
-	username, password, realm, pwError := f.getUserPassword(ctx, issuer.Spec.CredentialsRef.Name, f.ClusterResourceNamespace)
+	authMode, err := resolveAuthMode(issuer.Spec.AuthType)
+	if err != nil {
+		return nil, err
+	}
+
+	username, password, realm, pwError := f.getUserPassword(ctx, issuer.Spec.CredentialsRef.Name, f.ClusterResourceNamespace, authMode)
 	if pwError != nil {
 		return nil, pwError
 	}
@@ -133,16 +144,15 @@ func (f *IssuerFactory) getClusterAdcsIssuer(ctx context.Context, key client.Obj
 		return nil, fmt.Errorf("error loading ADCS CA bundle")
 	}
 
-	authMode := os.Getenv("ADCS_AUTH_MODE")
 	var (
 		certServ adcs.AdcsCertsrv
 		adcsErr  error
 	)
 
-	// Choose method based on env
-	if authMode == "kerberos" {
+	// Choose method based on issuer spec (or env fallback)
+	if authMode == authModeKerberos {
 		certServ, adcsErr = adcs.NewKerberosCertsrv(issuer.Spec.URL, username, realm, password, caCertPool, false)
-	} else { // default is ntlm
+	} else { // default is NTLM
 		certServ, adcsErr = adcs.NewNtlmCertsrv(issuer.Spec.URL, username, password, caCertPool, false)
 	}
 	if adcsErr != nil {
@@ -185,9 +195,26 @@ func getInterval(specValue string, def string, log logr.Logger) time.Duration {
 	return interval
 }
 
+func resolveAuthMode(specAuthMode string) (string, error) {
+	authMode := strings.ToLower(strings.TrimSpace(specAuthMode))
+	if authMode == "" {
+		authMode = strings.ToLower(strings.TrimSpace(os.Getenv("ADCS_AUTH_MODE")))
+	}
+	if authMode == "" {
+		return authModeNTLM, nil
+	}
+
+	switch authMode {
+	case authModeNTLM, authModeKerberos:
+		return authMode, nil
+	default:
+		return "", fmt.Errorf("unsupported auth mode %q: expected %q or %q", authMode, authModeNTLM, authModeKerberos)
+	}
+}
+
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 
-func (f *IssuerFactory) getUserPassword(ctx context.Context, secretName string, namespace string) (string, string, string, error) {
+func (f *IssuerFactory) getUserPassword(ctx context.Context, secretName string, namespace string, authMode string) (string, string, string, error) {
 	secret := new(corev1.Secret)
 	if err := f.Get(ctx, client.ObjectKey{Namespace: namespace, Name: secretName}, secret); err != nil {
 		return "", "", "", err
@@ -199,8 +226,7 @@ func (f *IssuerFactory) getUserPassword(ctx context.Context, secretName string, 
 		return "", "", "", fmt.Errorf("password not set in secret")
 	}
 
-	authMode := os.Getenv("ADCS_AUTH_MODE")
-	if _, ok := secret.Data["realm"]; !ok && authMode == "kerberos" {
+	if _, ok := secret.Data["realm"]; !ok && authMode == authModeKerberos {
 		return "", "", "", fmt.Errorf("realm not set in secret")
 	}
 

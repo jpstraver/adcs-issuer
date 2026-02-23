@@ -39,10 +39,19 @@ spec:
                   connections to the ADCS server.
                 format: byte
                 type: string
+              authType:
+                description: AuthType defines which authentication protocol to use
+                  against ADCS. Supported values are ntlm, kerberos. If omitted,
+                  the controller falls back to ADCS_AUTH_MODE and defaults to ntlm.
+                enum:
+                - ntlm
+                - kerberos
+                type: string
               credentialsRef:
                 description: CredentialsRef is a reference to a Secret containing
                   the username and password for the ADCS server. The secret must contain
-                  two keys, 'username' and 'password'.
+                  two keys, 'username' and 'password'. For kerberos authType, a third
+                  key 'realm' is also required.
                 properties:
                   name:
                     description: Name of the referent.

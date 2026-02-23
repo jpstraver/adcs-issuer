@@ -15,9 +15,17 @@ type ClusterAdcsIssuerSpec struct {
 	// URL is the base URL for the ADCS instance
 	URL string `json:"url"`
 
+	// AuthType defines which authentication protocol to use against ADCS.
+	// Supported values are: ntlm, kerberos.
+	// If omitted, the controller falls back to ADCS_AUTH_MODE and defaults to ntlm.
+	// +optional
+	// +kubebuilder:validation:Enum=ntlm;kerberos
+	AuthType string `json:"authType,omitempty"`
+
 	// CredentialsRef is a reference to a Secret containing the username and
 	// password for the ADCS server.
 	// The secret must contain two keys, 'username' and 'password'.
+	// For kerberos authType, a third key 'realm' is also required.
 	CredentialsRef LocalObjectReference `json:"credentialsRef"`
 
 	// CABundle is a PEM encoded TLS certifiate to use to verify connections to
