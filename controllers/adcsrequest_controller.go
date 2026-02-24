@@ -3,6 +3,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/go-logr/logr"
 	core "k8s.io/api/core/v1"
@@ -59,8 +60,13 @@ func (r *AdcsRequestReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	// Find the issuer
 	issuer, err := r.IssuerFactory.GetIssuer(ctx, ar.Spec.IssuerRef, ar.Namespace)
 	if err != nil {
+		ar.Status.State = api.Pending
+		ar.Status.Reason = formatRetryReason(err)
+		if statusErr := r.setStatus(ctx, ar); statusErr != nil {
+			log.Error(statusErr, "Couldn't update AdcsRequest status after issuer lookup error")
+		}
 		log.WithValues("issuer", ar.Spec.IssuerRef).Error(err, "Couldn't get issuer")
-		return ctrl.Result{}, err
+		return ctrl.Result{Requeue: true, RequeueAfter: time.Minute}, nil
 	}
 
 	if log.V(3).Enabled() {
@@ -70,8 +76,20 @@ func (r *AdcsRequestReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	cert, caCert, err := issuer.Issue(ctx, ar)
 	if err != nil {
 		// This is a local error.
-		// We don't change the request status and just put it back on the queue
-		// to re-try later.
+		// Keep retrying, but update status to make failure visible to users.
+		ar.Status.State = api.Pending
+		ar.Status.Reason = formatRetryReason(err)
+		if statusErr := r.setStatus(ctx, ar); statusErr != nil {
+			log.Error(statusErr, "Couldn't update AdcsRequest status after request error")
+		}
+		cr, crErr := r.CertificateRequestController.GetCertificateRequest(ctx, req.NamespacedName)
+		if crErr == nil {
+			if statusErr := r.CertificateRequestController.SetStatus(ctx, &cr, cmmeta.ConditionFalse, cmapi.CertificateRequestReasonPending, "ADCS request retrying: %s", ar.Status.Reason); statusErr != nil {
+				log.Error(statusErr, "Couldn't update CertificateRequest status after request error")
+			}
+		} else {
+			log.Error(crErr, "Couldn't get CertificateRequest to set retry status")
+		}
 		log.Error(err, "Failed request will be re-tried", "retry interval", issuer.RetryInterval)
 		return ctrl.Result{Requeue: true, RequeueAfter: issuer.RetryInterval}, nil
 	}
@@ -153,6 +171,18 @@ func (r *AdcsRequestReconciler) setStatus(ctx context.Context, ar *api.AdcsReque
 	r.Recorder.Event(ar, eventType, string(ar.Status.State), ar.Status.Reason)
 
 	return r.Status().Update(ctx, ar)
+}
+
+func formatRetryReason(err error) string {
+	if err == nil {
+		return "retrying after unknown error"
+	}
+	msg := fmt.Sprintf("retrying after error: %v", err)
+	const maxReasonLen = 512
+	if len(msg) > maxReasonLen {
+		return msg[:maxReasonLen-3] + "..."
+	}
+	return msg
 }
 
 func (r *AdcsRequestReconciler) SetupWithManager(mgr ctrl.Manager) error {
