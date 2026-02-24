@@ -39,6 +39,7 @@ Kubernetes: `>=1.27.0-0`
 | controllerManager.affinity.podAffinity | object | `{}` |  |
 | controllerManager.affinity.podAntiAffinity | object | `{}` |  |
 | controllerManager.arguments.cluster-resource-namespace | string | `"adcs-issuer"` |  |
+| controllerManager.arguments.adcsrequest-max-concurrent-reconciles | int | `5` |  |
 | controllerManager.arguments.disable-approved-check | string | `"false"` |  |
 | controllerManager.arguments.enable-leader-election | string | `"true"` |  |
 | controllerManager.arguments.zap-log-level | int | `5` |  |
@@ -46,6 +47,7 @@ Kubernetes: `>=1.27.0-0`
 | controllerManager.enabledCaCerts | bool | `false` |  |
 | controllerManager.enabledWebHooks | bool | `false` |  |
 | controllerManager.environment.ENABLE_DEBUG | string | `"false"` |  |
+| controllerManager.environment.ADCS_HTTP_TIMEOUT | string | `"60s"` |  |
 | controllerManager.environment.ENABLE_WEBHOOKS | string | `"false"` |  |
 | controllerManager.environment.KUBERNETES_CLUSTER_DOMAIN | string | `"cluster.local"` |  |
 | controllerManager.kerberosAuthentication.enabled | bool | `false` |  |

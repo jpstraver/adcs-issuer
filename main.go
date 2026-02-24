@@ -54,6 +54,7 @@ func main() {
 	var clusterResourceNamespace string
 	var disableApprovedCheck bool
 	var adcsTemplateName string
+	var adcsRequestMaxConcurrentReconciles int
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", fmt.Sprintf(":%d", defaultMetricsPort), "The address the metric endpoint binds to.")
 	flag.StringVar(&healthcheckAddr, "healthcheck-addr", fmt.Sprintf(":%d", defaultHealthCheckPort), "The address the healthcheck endpoints binds to.")
@@ -70,6 +71,12 @@ func main() {
 		"Enable leader election for controller manager. Enabling this will ensure there is only one active controller manager.")
 	flag.StringVar(&clusterResourceNamespace, "cluster-resource-namespace", "kube-system", "Namespace where cluster-level resources are stored.")
 	flag.StringVar(&adcsTemplateName, "adcsTemplateName", "BasicSSLWebServer", "Name of ADCS Template.")
+	flag.IntVar(
+		&adcsRequestMaxConcurrentReconciles,
+		"adcsrequest-max-concurrent-reconciles",
+		5,
+		"Maximum number of concurrent reconciles for AdcsRequest controller.",
+	)
 
 	// Options for configuring logging
 	opts := zap.Options{
@@ -143,6 +150,7 @@ func main() {
 		},
 		Recorder:                     mgr.GetEventRecorderFor("adcs-requests-controller"),
 		CertificateRequestController: certificateRequestReconciler,
+		MaxConcurrentReconciles:      adcsRequestMaxConcurrentReconciles,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "AdcsRequest")
 		os.Exit(1)

@@ -98,6 +98,7 @@ controllerManager:
     KUBERNETES_CLUSTER_DOMAIN: cluster.local  # Kubernetes cluster domain.
     ENABLE_WEBHOOKS: "false"                  # Enable or disable webhooks.
     ENABLE_DEBUG: "false"                     # Enable or disable debug mode.
+    ADCS_HTTP_TIMEOUT: "60s"                  # Timeout for outbound ADCS HTTP requests.
   # @section Arguments
   # Command-line arguments for the controller manager.
   arguments:
@@ -105,6 +106,7 @@ controllerManager:
     cluster-resource-namespace: adcs-issuer   # Namespace for cluster resources.
     zap-log-level: 5                          # Logging level for zap logger.
     disable-approved-check: "false"           # Disable approved check.
+    adcsrequest-max-concurrent-reconciles: 5  # Number of concurrent AdcsRequest workers.
 
   # @section Security Context
   # Security context for the controller manager pods.

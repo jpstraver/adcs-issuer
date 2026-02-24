@@ -2,6 +2,7 @@ package adcs
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
@@ -11,7 +12,7 @@ import (
 	neturl "net/url"
 	"os"
 	"regexp"
-	"strings"
+	"time"
 
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -21,9 +22,10 @@ import (
 )
 
 type KerberosCertsrv struct {
-	url        string
-	krbClient  *client.Client
-	httpClient *spnego.Client
+	url            string
+	krbClient      *client.Client
+	httpClient     *spnego.Client
+	requestTimeout time.Duration
 }
 
 func NewKerberosCertsrv(url, username, realm, password string, caCertPool *x509.CertPool, verify bool) (*KerberosCertsrv, error) {
@@ -58,19 +60,28 @@ func NewKerberosCertsrv(url, username, realm, password string, caCertPool *x509.
 		}
 	}
 
+	timeout := getADCSHTTPTimeout()
 	transport := &http.Transport{
 		TLSClientConfig: &tls.Config{
 			RootCAs: caPool,
 		},
+		ForceAttemptHTTP2:     false,
+		ResponseHeaderTimeout: timeout,
+		TLSHandshakeTimeout:   defaultTLSHandshakeWait,
+		IdleConnTimeout:       defaultIdleConnTimeout,
 	}
 
-	httpClient := &http.Client{Transport: transport}
+	httpClient := &http.Client{
+		Transport: transport,
+		Timeout:   timeout,
+	}
 	spnegoClient := spnego.NewClient(krbClient, httpClient, "")
 
 	c := &KerberosCertsrv{
-		url:        url,
-		krbClient:  krbClient,
-		httpClient: spnegoClient,
+		url:            url,
+		krbClient:      krbClient,
+		httpClient:     spnegoClient,
+		requestTimeout: timeout,
 	}
 
 	if verify {
@@ -85,12 +96,23 @@ func NewKerberosCertsrv(url, username, realm, password string, caCertPool *x509.
 	return c, nil
 }
 
+func (s *KerberosCertsrv) newRequest(method, url string, body io.Reader) (*http.Request, context.CancelFunc, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), s.requestTimeout)
+	req, err := http.NewRequestWithContext(ctx, method, url, body)
+	if err != nil {
+		cancel()
+		return nil, nil, err
+	}
+	return req, cancel, nil
+}
+
 func (s *KerberosCertsrv) verifyKerberos() (bool, error) {
 	log := log.Log.WithName("verifyKerberos")
-	req, err := http.NewRequest("GET", s.url, nil)
+	req, cancel, err := s.newRequest(http.MethodGet, s.url, nil)
 	if err != nil {
 		return false, err
 	}
+	defer cancel()
 
 	res, err := s.httpClient.Do(req)
 	if err != nil {
@@ -121,7 +143,12 @@ func (s *KerberosCertsrv) GetExistingCertificate(id string) (AdcsResponseStatus,
 	if os.Getenv("ENABLE_DEBUG") == "true" {
 		log.Info("Making url request", "url", url)
 	}
-	req, _ := http.NewRequest("GET", url, nil)
+	req, cancel, err := s.newRequest(http.MethodGet, url, nil)
+	if err != nil {
+		log.Error(err, "Cannot create request")
+		return certStatus, "", id, err
+	}
+	defer cancel()
 	req.Header.Set("User-agent", "Mozilla")
 	res, err := s.httpClient.Do(req)
 
@@ -140,7 +167,8 @@ func (s *KerberosCertsrv) GetExistingCertificate(id string) (AdcsResponseStatus,
 	}()
 
 	if res.StatusCode == http.StatusOK {
-		switch ct := strings.Split(res.Header.Get("content-type"), ";"); ct[0] {
+		contentType := normalizeContentType(res.Header.Get("content-type"))
+		switch contentType {
 		case ct_html:
 			// Denied or pending
 			body, err := io.ReadAll(res.Body)
@@ -197,12 +225,12 @@ func (s *KerberosCertsrv) GetExistingCertificate(id string) (AdcsResponseStatus,
 			}
 			return Ready, string(cert), id, nil
 		default:
-			err = fmt.Errorf("unexpected content type %s", ct)
+			err = fmt.Errorf("unexpected content type %s", contentType)
 			log.Error(err, "Unexpected content type")
 			return certStatus, "", id, err
 		}
 	}
-	return certStatus, "", id, fmt.Errorf("ADCS Certsrv response status %s. Error: %s", res.Status, err.Error())
+	return certStatus, "", id, fmt.Errorf("ADCS Certsrv response status %s", res.Status)
 
 }
 
@@ -231,12 +259,13 @@ func (s *KerberosCertsrv) RequestCertificate(csr string, template string) (AdcsR
 		"CertificateTemplate": {template},
 	}
 
-	req, err := http.NewRequest("POST", url, bytes.NewBufferString(params.Encode()))
+	req, cancel, err := s.newRequest(http.MethodPost, url, bytes.NewBufferString(params.Encode()))
 
 	if err != nil {
 		log.Error(err, "Cannot create request")
 		return certStatus, "", "", err
 	}
+	defer cancel()
 
 	req.Header.Set("User-agent", "Mozilla")
 	req.Header.Set("Content-type", ct_urlenc)
@@ -269,16 +298,15 @@ func (s *KerberosCertsrv) RequestCertificate(csr string, template string) (AdcsR
 	}
 
 	body, err := io.ReadAll(res.Body)
-
-	log.Info("Body", "body", body)
-
-	if res.Header.Get("Content-type") == ct_pkix {
-		// klog.V(4).Infof("klog_v4: returned [Ready] %v", Ready)
-		return Ready, string(body), "none", nil
-	}
 	if err != nil {
 		log.Error(err, "Cannot read ADCS Certserv response")
 		return certStatus, "", "", err
+	}
+	log.Info("Body", "bytes", len(body), "status", res.Status, "contentType", normalizeContentType(res.Header.Get("content-type")))
+
+	if hasContentType(res.Header.Get("content-type"), ct_pkix) {
+		// klog.V(4).Infof("klog_v4: returned [Ready] %v", Ready)
+		return Ready, string(body), "none", nil
 	}
 
 	bodyString := string(body)
@@ -324,7 +352,12 @@ func (s *KerberosCertsrv) obtainCaCertificate(certPage string, expectedContentTy
 	// Check for newest renewal number
 	url := fmt.Sprintf("%s/%s", s.url, certcarc)
 	// klog.V(4).Infof("inside obtainCaCertificate: going to url: %v ", url)
-	req, _ := http.NewRequest("GET", url, nil)
+	req, cancel, err := s.newRequest(http.MethodGet, url, nil)
+	if err != nil {
+		log.Error(err, "Cannot create request")
+		return "", err
+	}
+	defer cancel()
 	req.Header.Set("User-agent", "Mozilla")
 	if os.Getenv("ENABLE_DEBUG") == "true" {
 		log.Info("obtainCaCertificate start", "req", req, "url", url)
@@ -361,7 +394,12 @@ func (s *KerberosCertsrv) obtainCaCertificate(certPage string, expectedContentTy
 
 	// Get CA cert (newest renewal number)
 	url = fmt.Sprintf("%s/%s?ReqID=CACert&ENC=b64&Renewal=%s", s.url, certPage, renewal)
-	req, _ = http.NewRequest("GET", url, nil)
+	req, cancel, err = s.newRequest(http.MethodGet, url, nil)
+	if err != nil {
+		log.Error(err, "Cannot create request")
+		return "", err
+	}
+	defer cancel()
 	req.Header.Set("User-agent", "Mozilla")
 
 	res2, err := s.httpClient.Do(req)
@@ -379,10 +417,10 @@ func (s *KerberosCertsrv) obtainCaCertificate(certPage string, expectedContentTy
 	}()
 
 	if res2.StatusCode == http.StatusOK {
-		ct := res2.Header.Get("content-type")
-		if expectedContentType != ct {
+		ct := normalizeContentType(res2.Header.Get("content-type"))
+		if !hasContentType(ct, expectedContentType) {
 			err = errors.New("unexpected content type")
-			log.Error(err, err.Error(), "content type", ct)
+			log.Error(err, err.Error(), "content type", ct, "expected", expectedContentType)
 			return "", err
 		}
 		body, err := io.ReadAll(res2.Body)
@@ -393,7 +431,7 @@ func (s *KerberosCertsrv) obtainCaCertificate(certPage string, expectedContentTy
 		// klog.V(4).Infof("return body adcs certserv response: %v ", body)
 		return string(body), nil
 	}
-	return "", fmt.Errorf("ADCS Certsrv response status %s. Error: %s", res2.Status, err.Error())
+	return "", fmt.Errorf("ADCS Certsrv response status %s", res2.Status)
 }
 func (s *KerberosCertsrv) GetCaCertificate() (string, error) {
 	log.Log.WithName("GetCaCertificate").Info("Getting CA from ADCS Certsrv", "url", s.url)

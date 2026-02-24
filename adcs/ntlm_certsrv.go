@@ -2,6 +2,7 @@ package adcs
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
@@ -11,7 +12,7 @@ import (
 	neturl "net/url"
 	"os"
 	"regexp"
-	"strings"
+	"time"
 
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -20,9 +21,10 @@ import (
 )
 
 type NtlmCertsrv struct {
-	url      string
-	username string
-	password string
+	url            string
+	username       string
+	password       string
+	requestTimeout time.Duration
 	//ca         string
 	httpClient *http.Client
 }
@@ -30,11 +32,16 @@ type NtlmCertsrv struct {
 func NewNtlmCertsrv(url string, username string, password string, caCertPool *x509.CertPool, verify bool) (AdcsCertsrv, error) {
 	log := log.Log.WithName("newNtlm")
 	var client *http.Client
+	timeout := getADCSHTTPTimeout()
 	transport := &http.Transport{
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: false,
 			RootCAs:            caCertPool,
 		},
+		ForceAttemptHTTP2:     false,
+		ResponseHeaderTimeout: timeout,
+		TLSHandshakeTimeout:   defaultTLSHandshakeWait,
+		IdleConnTimeout:       defaultIdleConnTimeout,
 	}
 	if os.Getenv("ENABLE_DEBUG") == "true" {
 		log.Info("NTLM verification start", "username", username, "url", url)
@@ -45,6 +52,7 @@ func NewNtlmCertsrv(url string, username string, password string, caCertPool *x5
 			Transport: ntlmssp.Negotiator{
 				RoundTripper: transport,
 			},
+			Timeout: timeout,
 		}
 		if os.Getenv("ENABLE_DEBUG") == "true" {
 			log.Info("NTLM verification Using NTLM")
@@ -53,6 +61,7 @@ func NewNtlmCertsrv(url string, username string, password string, caCertPool *x5
 		// Plain client with no NTLM
 		client = &http.Client{
 			Transport: transport,
+			Timeout:   timeout,
 		}
 		if os.Getenv("ENABLE_DEBUG") == "true" {
 			log.Info("NTLM verification not using NTLM")
@@ -61,10 +70,11 @@ func NewNtlmCertsrv(url string, username string, password string, caCertPool *x5
 	}
 
 	c := &NtlmCertsrv{
-		url:        url,
-		username:   username,
-		password:   password,
-		httpClient: client,
+		url:            url,
+		username:       username,
+		password:       password,
+		httpClient:     client,
+		requestTimeout: timeout,
 	}
 	if verify {
 		success, err := c.verifyNtlm()
@@ -78,6 +88,16 @@ func NewNtlmCertsrv(url string, username string, password string, caCertPool *x5
 	return c, nil
 }
 
+func (s *NtlmCertsrv) newRequest(method, url string, body io.Reader) (*http.Request, context.CancelFunc, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), s.requestTimeout)
+	req, err := http.NewRequestWithContext(ctx, method, url, body)
+	if err != nil {
+		cancel()
+		return nil, nil, err
+	}
+	return req, cancel, nil
+}
+
 // Check if NTLM authentication is working for current credentials and URL
 func (s *NtlmCertsrv) verifyNtlm() (bool, error) {
 	log := log.Log.WithName("verifyNtlm")
@@ -86,13 +106,24 @@ func (s *NtlmCertsrv) verifyNtlm() (bool, error) {
 	}
 	log.V(5).Info("NTLM verification", "username", s.username, "url", s.url)
 
-	req, _ := http.NewRequest("GET", s.url, nil)
-	req.SetBasicAuth(s.username, s.password)
+	req, cancel, err := s.newRequest(http.MethodGet, s.url, nil)
+	if err != nil {
+		return false, err
+	}
+	defer cancel()
+	if s.username != "" || s.password != "" {
+		req.SetBasicAuth(s.username, s.password)
+	}
 	res, err := s.httpClient.Do(req)
 	if err != nil {
 		log.Error(err, "ADCS server error")
 		return false, err
 	}
+	defer func() {
+		if cerr := res.Body.Close(); cerr != nil {
+			log.Error(cerr, "failed to close response body")
+		}
+	}()
 	if os.Getenv("ENABLE_DEBUG") == "true" {
 		log.Info("NTLM verification successful", "status", res.Status)
 	}
@@ -115,8 +146,15 @@ func (s *NtlmCertsrv) GetExistingCertificate(id string) (AdcsResponseStatus, str
 	if os.Getenv("ENABLE_DEBUG") == "true" {
 		log.Info("Making url request", "url", url)
 	}
-	req, _ := http.NewRequest("GET", url, nil)
-	req.SetBasicAuth(s.username, s.password)
+	req, cancel, err := s.newRequest(http.MethodGet, url, nil)
+	if err != nil {
+		log.Error(err, "Cannot create request")
+		return certStatus, "", id, err
+	}
+	defer cancel()
+	if s.username != "" || s.password != "" {
+		req.SetBasicAuth(s.username, s.password)
+	}
 	req.Header.Set("User-agent", "Mozilla")
 	res, err := s.httpClient.Do(req)
 
@@ -128,10 +166,15 @@ func (s *NtlmCertsrv) GetExistingCertificate(id string) (AdcsResponseStatus, str
 		log.Error(err, "ADCS Certserv error")
 		return certStatus, "", id, err
 	}
-	defer func() { _ = res.Body.Close() }()
+	defer func() {
+		if cerr := res.Body.Close(); cerr != nil {
+			log.Error(cerr, "failed to close response body")
+		}
+	}()
 
 	if res.StatusCode == http.StatusOK {
-		switch ct := strings.Split(res.Header.Get("content-type"), ";"); ct[0] {
+		contentType := normalizeContentType(res.Header.Get("content-type"))
+		switch contentType {
 		case ct_html:
 			// Denied or pending
 			body, err := io.ReadAll(res.Body)
@@ -188,12 +231,12 @@ func (s *NtlmCertsrv) GetExistingCertificate(id string) (AdcsResponseStatus, str
 			}
 			return Ready, string(cert), id, nil
 		default:
-			err = fmt.Errorf("unexpected content type %s", ct)
+			err = fmt.Errorf("unexpected content type %s", contentType)
 			log.Error(err, "Unexpected content type")
 			return certStatus, "", id, err
 		}
 	}
-	return certStatus, "", id, fmt.Errorf("ADCS Certsrv response status %s. Error: %s", res.Status, err.Error())
+	return certStatus, "", id, fmt.Errorf("ADCS Certsrv response status %s", res.Status)
 
 }
 
@@ -222,13 +265,16 @@ func (s *NtlmCertsrv) RequestCertificate(csr string, template string) (AdcsRespo
 		"CertificateTemplate": {template},
 	}
 
-	req, err := http.NewRequest("POST", url, bytes.NewBufferString(params.Encode()))
+	req, cancel, err := s.newRequest(http.MethodPost, url, bytes.NewBufferString(params.Encode()))
 
 	if err != nil {
 		log.Error(err, "Cannot create request")
 		return certStatus, "", "", err
 	}
-	req.SetBasicAuth(s.username, s.password)
+	defer cancel()
+	if s.username != "" || s.password != "" {
+		req.SetBasicAuth(s.username, s.password)
+	}
 	klog.V(5).Infof("Username as BasicAuth: \n %v ", s.username)
 
 	req.Header.Set("User-agent", "Mozilla")
@@ -251,12 +297,22 @@ func (s *NtlmCertsrv) RequestCertificate(csr string, template string) (AdcsRespo
 		log.Error(err, "ADCS Certserv error")
 		return certStatus, "", "", err
 	}
+	defer func() {
+		if cerr := res.Body.Close(); cerr != nil {
+			log.Error(cerr, "failed to close response body")
+		}
+	}()
 
 	if os.Getenv("ENABLE_DEBUG") == "true" {
 		log.Info("Sending request", "response", res)
 	}
 
 	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		log.Error(err, "Cannot read ADCS Certserv response")
+		return certStatus, "", "", err
+	}
+	log.Info("Body", "bytes", len(body), "status", res.Status, "contentType", normalizeContentType(res.Header.Get("content-type")))
 
 	bodyString := string(body)
 
@@ -264,13 +320,9 @@ func (s *NtlmCertsrv) RequestCertificate(csr string, template string) (AdcsRespo
 		log.Info("Body", "body", bodyString)
 	}
 
-	if res.Header.Get("Content-type") == ct_pkix {
+	if hasContentType(res.Header.Get("content-type"), ct_pkix) {
 		// klog.V(4).Infof("klog_v4: returned [Ready] %v", Ready)
 		return Ready, bodyString, "none", nil
-	}
-	if err != nil {
-		log.Error(err, "Cannot read ADCS Certserv response")
-		return certStatus, "", "", err
 	}
 
 	exp := regexp.MustCompile(`certnew.cer\?ReqID=([0-9]+)&`)
@@ -310,8 +362,15 @@ func (s *NtlmCertsrv) obtainCaCertificate(certPage string, expectedContentType s
 	// Check for newest renewal number
 	url := fmt.Sprintf("%s/%s", s.url, certcarc)
 	// klog.V(4).Infof("inside obtainCaCertificate: going to url: %v ", url)
-	req, _ := http.NewRequest("GET", url, nil)
-	req.SetBasicAuth(s.username, s.password)
+	req, cancel, err := s.newRequest(http.MethodGet, url, nil)
+	if err != nil {
+		log.Error(err, "Cannot create request")
+		return "", err
+	}
+	defer cancel()
+	if s.username != "" || s.password != "" {
+		req.SetBasicAuth(s.username, s.password)
+	}
 	req.Header.Set("User-agent", "Mozilla")
 	if os.Getenv("ENABLE_DEBUG") == "true" {
 		log.Info("obtainCaCertificate start", "req", req, "url", url)
@@ -327,7 +386,11 @@ func (s *NtlmCertsrv) obtainCaCertificate(certPage string, expectedContentType s
 		log.Error(err, "ADCS Certserv error")
 		return "", err
 	}
-	defer func() { _ = res1.Body.Close() }()
+	defer func() {
+		if cerr := res1.Body.Close(); cerr != nil {
+			log.Error(cerr, "failed to close response body")
+		}
+	}()
 	body, err := io.ReadAll(res1.Body)
 	if err != nil {
 		log.Error(err, "Cannot read ADCS Certserv response")
@@ -345,8 +408,15 @@ func (s *NtlmCertsrv) obtainCaCertificate(certPage string, expectedContentType s
 
 	// Get CA cert (newest renewal number)
 	url = fmt.Sprintf("%s/%s?ReqID=CACert&ENC=b64&Renewal=%s", s.url, certPage, renewal)
-	req, _ = http.NewRequest("GET", url, nil)
-	req.SetBasicAuth(s.username, s.password)
+	req, cancel, err = s.newRequest(http.MethodGet, url, nil)
+	if err != nil {
+		log.Error(err, "Cannot create request")
+		return "", err
+	}
+	defer cancel()
+	if s.username != "" || s.password != "" {
+		req.SetBasicAuth(s.username, s.password)
+	}
 	req.Header.Set("User-agent", "Mozilla")
 
 	res2, err := s.httpClient.Do(req)
@@ -357,13 +427,17 @@ func (s *NtlmCertsrv) obtainCaCertificate(certPage string, expectedContentType s
 		log.Error(err, "ADCS Certserv error")
 		return "", err
 	}
-	defer func() { _ = res2.Body.Close() }()
+	defer func() {
+		if cerr := res2.Body.Close(); cerr != nil {
+			log.Error(cerr, "failed to close response body")
+		}
+	}()
 
 	if res2.StatusCode == http.StatusOK {
-		ct := res2.Header.Get("content-type")
-		if expectedContentType != ct {
+		ct := normalizeContentType(res2.Header.Get("content-type"))
+		if !hasContentType(ct, expectedContentType) {
 			err = errors.New("unexpected content type")
-			log.Error(err, err.Error(), "content type", ct)
+			log.Error(err, err.Error(), "content type", ct, "expected", expectedContentType)
 			return "", err
 		}
 		body, err := io.ReadAll(res2.Body)
@@ -374,7 +448,7 @@ func (s *NtlmCertsrv) obtainCaCertificate(certPage string, expectedContentType s
 		// klog.V(4).Infof("return body adcs certserv response: %v ", body)
 		return string(body), nil
 	}
-	return "", fmt.Errorf("ADCS Certsrv response status %s. Error: %s", res2.Status, err.Error())
+	return "", fmt.Errorf("ADCS Certsrv response status %s", res2.Status)
 }
 func (s *NtlmCertsrv) GetCaCertificate() (string, error) {
 	log.Log.WithName("GetCaCertificate").Info("Getting CA from ADCS Certsrv", "url", s.url)

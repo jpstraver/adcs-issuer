@@ -11,6 +11,7 @@ import (
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 
 	cmapi "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	cmmeta "github.com/cert-manager/cert-manager/pkg/apis/meta/v1"
@@ -26,6 +27,7 @@ type AdcsRequestReconciler struct {
 	IssuerFactory                issuers.IssuerFactory
 	Recorder                     record.EventRecorder
 	CertificateRequestController *CertificateRequestReconciler
+	MaxConcurrentReconciles      int
 }
 
 // +kubebuilder:rbac:groups=adcs.certmanager.csf.nokia.com,resources=adcsrequests,verbs=get;list;watch;create;update;patch;delete
@@ -154,7 +156,13 @@ func (r *AdcsRequestReconciler) setStatus(ctx context.Context, ar *api.AdcsReque
 }
 
 func (r *AdcsRequestReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	maxConcurrentReconciles := r.MaxConcurrentReconciles
+	if maxConcurrentReconciles < 1 {
+		maxConcurrentReconciles = 1
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
+		WithOptions(controller.Options{MaxConcurrentReconciles: maxConcurrentReconciles}).
 		For(&api.AdcsRequest{}).
 		Complete(r)
 }

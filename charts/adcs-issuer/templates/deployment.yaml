@@ -72,6 +72,8 @@ spec:
               value: {{ .Values.controllerManager.environment.ENABLE_WEBHOOKS | quote }}
             - name: ENABLE_DEBUG
               value: {{ .Values.controllerManager.environment.ENABLE_DEBUG | quote }}
+            - name: ADCS_HTTP_TIMEOUT
+              value: {{ .Values.controllerManager.environment.ADCS_HTTP_TIMEOUT | quote }}
             - name: POD_NAMESPACE
               valueFrom:
                 fieldRef:

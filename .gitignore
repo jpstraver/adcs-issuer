@@ -48,3 +48,4 @@ dist/
 kubeconfig
 all-*.yaml
 Chart.lock
+/Sandbox/

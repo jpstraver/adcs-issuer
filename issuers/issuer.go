@@ -67,6 +67,7 @@ func (i *Issuer) Issue(ctx context.Context, ar *api.AdcsRequest) ([]byte, []byte
 	}
 
 	var cert []byte
+	var ca []byte
 	switch adcsResponseStatus {
 	case adcs.Pending:
 		// It must be checked again later
@@ -79,6 +80,19 @@ func (i *Issuer) Issue(ctx context.Context, ar *api.AdcsRequest) ([]byte, []byte
 		ar.Status.Id = id
 		ar.Status.Reason = "certificate obtained successfully"
 		cert = []byte(desc)
+
+		// Get the certificate chain only when the certificate is ready.
+		certChain, chainErr := i.certServ.GetCaCertificateChain()
+		if chainErr != nil {
+			return nil, nil, chainErr
+		}
+
+		// Parse and encode the certificate chain to a valid x509 certificate.
+		ca, chainErr = parseCaCert([]byte(certChain), log)
+		if chainErr != nil {
+			log.Error(chainErr, "something went wrong parsing to x509")
+			return nil, nil, chainErr
+		}
 	case adcs.Rejected:
 		// Certificate request rejected by ADCS
 		ar.Status.State = api.Rejected
@@ -89,21 +103,6 @@ func (i *Issuer) Issue(ctx context.Context, ar *api.AdcsRequest) ([]byte, []byte
 		ar.Status.State = api.Errored
 		ar.Status.Id = id
 		ar.Status.Reason = desc
-	}
-
-	// Get a certificateChain from the server.
-	certChain, err := i.certServ.GetCaCertificateChain()
-
-	if err != nil {
-		return nil, nil, err
-	}
-
-	// Parse and encode the certificateChain to a valid x509 certificate.
-	ca, err := parseCaCert([]byte(certChain), log)
-
-	if err != nil {
-		log.Error(err, "something went wrong parsing to x509")
-		return nil, nil, err
 	}
 
 	if log.V(4).Enabled() {
