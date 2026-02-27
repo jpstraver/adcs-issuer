@@ -30,6 +30,11 @@ func TestResolveAuthMode(t *testing.T) {
 			wantAuth: authModeKerberos,
 		},
 		{
+			name:     "supports basic auth mode",
+			specAuth: "basic",
+			wantAuth: authModeBasic,
+		},
+		{
 			name:     "uses spec value over env value",
 			specAuth: "ntlm",
 			envAuth:  "kerberos",
@@ -85,6 +90,24 @@ func TestGetUserPassword_NTLM_RealmOptional(t *testing.T) {
 	})
 
 	username, password, realm, err := f.getUserPassword(context.Background(), "creds", "ns1", authModeNTLM)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if username != "user1" || password != "pass1" || realm != "" {
+		t.Fatalf("unexpected credentials returned: user=%q pass=%q realm=%q", username, password, realm)
+	}
+}
+
+func TestGetUserPassword_Basic_RealmOptional(t *testing.T) {
+	f := newIssuerFactoryForTests(t, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "creds", Namespace: "ns1"},
+		Data: map[string][]byte{
+			"username": []byte("user1"),
+			"password": []byte("pass1"),
+		},
+	})
+
+	username, password, realm, err := f.getUserPassword(context.Background(), "creds", "ns1", authModeBasic)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

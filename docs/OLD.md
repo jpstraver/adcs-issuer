@@ -59,7 +59,7 @@ metadata:
   name: test-adcs
   namespace: <namespace>
 spec:
-  authType: ntlm
+  authType: ntlm # use basic when IIS Basic auth is enabled on /certsrv over HTTPS
   caBundle: <base64-encoded-ca-certificate>
   credentialsRef:
     name: test-adcs-issuer-credentials
@@ -98,7 +98,7 @@ kind: ClusterAdcsIssuer
 metadata:
   name: test-adcs
 spec:
-  authType: ntlm
+  authType: ntlm # use basic when IIS Basic auth is enabled on /certsrv over HTTPS
   caBundle: <base64-encoded-ca-certificate>
   credentialsRef:
     name: test-adcs-issuer-credentials

@@ -24,13 +24,22 @@ type NtlmCertsrv struct {
 	url            string
 	username       string
 	password       string
+	authMode       string
 	requestTimeout time.Duration
 	//ca         string
 	httpClient *http.Client
 }
 
 func NewNtlmCertsrv(url string, username string, password string, caCertPool *x509.CertPool, verify bool) (AdcsCertsrv, error) {
-	log := log.Log.WithName("newNtlm")
+	return newHTTPAuthCertsrv(url, username, password, caCertPool, verify, true, "ntlm")
+}
+
+func NewBasicCertsrv(url string, username string, password string, caCertPool *x509.CertPool, verify bool) (AdcsCertsrv, error) {
+	return newHTTPAuthCertsrv(url, username, password, caCertPool, verify, false, "basic")
+}
+
+func newHTTPAuthCertsrv(url string, username string, password string, caCertPool *x509.CertPool, verify bool, useNTLM bool, authMode string) (AdcsCertsrv, error) {
+	log := log.Log.WithName("newHTTPAuth").WithValues("authMode", authMode)
 	var client *http.Client
 	timeout := getADCSHTTPTimeout()
 	transport := &http.Transport{
@@ -44,9 +53,9 @@ func NewNtlmCertsrv(url string, username string, password string, caCertPool *x5
 		IdleConnTimeout:       defaultIdleConnTimeout,
 	}
 	if os.Getenv("ENABLE_DEBUG") == "true" {
-		log.Info("NTLM verification start", "username", username, "url", url)
+		log.Info("Authentication verification start", "username", username, "url", url)
 	}
-	if username != "" && password != "" {
+	if username != "" && password != "" && useNTLM {
 		// Set up NTLM authentication
 		client = &http.Client{
 			Transport: ntlmssp.Negotiator{
@@ -55,35 +64,36 @@ func NewNtlmCertsrv(url string, username string, password string, caCertPool *x5
 			Timeout: timeout,
 		}
 		if os.Getenv("ENABLE_DEBUG") == "true" {
-			log.Info("NTLM verification Using NTLM")
+			log.Info("Using NTLM negotiator transport")
 		}
 	} else {
-		// Plain client with no NTLM
+		// Plain HTTP client with no NTLM negotiation (used by basic auth mode).
 		client = &http.Client{
 			Transport: transport,
 			Timeout:   timeout,
 		}
 		if os.Getenv("ENABLE_DEBUG") == "true" {
-			log.Info("NTLM verification not using NTLM")
+			log.Info("Using plain HTTP transport")
 		}
-		log.V(5).Info("NTLM verification not using NTL")
+		log.V(5).Info("Using plain HTTP transport")
 	}
 
 	c := &NtlmCertsrv{
 		url:            url,
 		username:       username,
 		password:       password,
+		authMode:       authMode,
 		httpClient:     client,
 		requestTimeout: timeout,
 	}
 	if verify {
-		success, err := c.verifyNtlm()
+		success, err := c.verifyAuth()
 		if !success {
 			return nil, err
 		}
 	}
 	if os.Getenv("ENABLE_DEBUG") == "true" {
-		log.Info("NTLM verification stop", "username", username, "url", url)
+		log.Info("Authentication verification stop", "username", username, "url", url)
 	}
 	return c, nil
 }
@@ -98,13 +108,13 @@ func (s *NtlmCertsrv) newRequest(method, url string, body io.Reader) (*http.Requ
 	return req, cancel, nil
 }
 
-// Check if NTLM authentication is working for current credentials and URL
-func (s *NtlmCertsrv) verifyNtlm() (bool, error) {
-	log := log.Log.WithName("verifyNtlm")
+// Check if configured authentication transport is working for current credentials and URL.
+func (s *NtlmCertsrv) verifyAuth() (bool, error) {
+	log := log.Log.WithName("verifyHTTPAuth").WithValues("authMode", s.authMode)
 	if os.Getenv("ENABLE_DEBUG") == "true" {
-		log.Info("NTLM verification", "username", s.username, "url", s.url)
+		log.Info("Authentication verification", "username", s.username, "url", s.url)
 	}
-	log.V(5).Info("NTLM verification", "username", s.username, "url", s.url)
+	log.V(5).Info("Authentication verification", "username", s.username, "url", s.url)
 
 	req, cancel, err := s.newRequest(http.MethodGet, s.url, nil)
 	if err != nil {
@@ -125,9 +135,9 @@ func (s *NtlmCertsrv) verifyNtlm() (bool, error) {
 		}
 	}()
 	if os.Getenv("ENABLE_DEBUG") == "true" {
-		log.Info("NTLM verification successful", "status", res.Status)
+		log.Info("Authentication verification successful", "status", res.Status)
 	}
-	log.V(5).Info("NTLM verification successful", "status", res.Status)
+	log.V(5).Info("Authentication verification successful", "status", res.Status)
 	return true, nil
 }
 

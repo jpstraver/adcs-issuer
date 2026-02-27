@@ -16,10 +16,10 @@ type AdcsIssuerSpec struct {
 	URL string `json:"url"`
 
 	// AuthType defines which authentication protocol to use against ADCS.
-	// Supported values are: ntlm, kerberos.
+	// Supported values are: ntlm, basic, kerberos.
 	// If omitted, the controller falls back to ADCS_AUTH_MODE and defaults to ntlm.
 	// +optional
-	// +kubebuilder:validation:Enum=ntlm;kerberos
+	// +kubebuilder:validation:Enum=ntlm;basic;kerberos
 	AuthType string `json:"authType,omitempty"`
 
 	// CredentialsRef is a reference to a Secret containing the username and

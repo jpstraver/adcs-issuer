@@ -23,6 +23,7 @@ const (
 	defaultStatusCheckInterval = "6h"
 	defaultRetryInterval       = "1h"
 	authModeNTLM               = "ntlm"
+	authModeBasic              = "basic"
 	authModeKerberos           = "kerberos"
 )
 
@@ -84,6 +85,8 @@ func (f *IssuerFactory) getAdcsIssuer(ctx context.Context, key client.ObjectKey)
 	// Choose method based on issuer spec (or env fallback)
 	if authMode == authModeKerberos {
 		certServ, adcsErr = adcs.NewKerberosCertsrv(issuer.Spec.URL, username, realm, password, caCertPool, false)
+	} else if authMode == authModeBasic {
+		certServ, adcsErr = adcs.NewBasicCertsrv(issuer.Spec.URL, username, password, caCertPool, false)
 	} else { // default is NTLM
 		certServ, adcsErr = adcs.NewNtlmCertsrv(issuer.Spec.URL, username, password, caCertPool, false)
 	}
@@ -152,6 +155,8 @@ func (f *IssuerFactory) getClusterAdcsIssuer(ctx context.Context, key client.Obj
 	// Choose method based on issuer spec (or env fallback)
 	if authMode == authModeKerberos {
 		certServ, adcsErr = adcs.NewKerberosCertsrv(issuer.Spec.URL, username, realm, password, caCertPool, false)
+	} else if authMode == authModeBasic {
+		certServ, adcsErr = adcs.NewBasicCertsrv(issuer.Spec.URL, username, password, caCertPool, false)
 	} else { // default is NTLM
 		certServ, adcsErr = adcs.NewNtlmCertsrv(issuer.Spec.URL, username, password, caCertPool, false)
 	}
@@ -205,10 +210,10 @@ func resolveAuthMode(specAuthMode string) (string, error) {
 	}
 
 	switch authMode {
-	case authModeNTLM, authModeKerberos:
+	case authModeNTLM, authModeBasic, authModeKerberos:
 		return authMode, nil
 	default:
-		return "", fmt.Errorf("unsupported auth mode %q: expected %q or %q", authMode, authModeNTLM, authModeKerberos)
+		return "", fmt.Errorf("unsupported auth mode %q: expected %q, %q or %q", authMode, authModeNTLM, authModeBasic, authModeKerberos)
 	}
 }
 
