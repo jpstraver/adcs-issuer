@@ -43,11 +43,15 @@ func (i *Issuer) Issue(ctx context.Context, ar *api.AdcsRequest) ([]byte, []byte
 		// Of all the statuses only Pending requires processing.
 		// All others are final
 		if ar.Status.State == api.Pending {
-			// Check the status of the request on the ADCS
+			// Check the status of the request on ADCS when we have a known request ID.
+			// If the ID is missing (for example after a transient local failure),
+			// resubmit as a new request instead of failing permanently.
 			if ar.Status.Id == "" {
-				return nil, nil, fmt.Errorf("adcs id not set")
+				log.Info("Pending request has no ADCS request ID; submitting as new request")
+				adcsResponseStatus, desc, id, err = i.certServ.RequestCertificate(string(ar.Spec.CSRPEM), i.AdcsTemplateName)
+			} else {
+				adcsResponseStatus, desc, id, err = i.certServ.GetExistingCertificate(ar.Status.Id)
 			}
-			adcsResponseStatus, desc, id, err = i.certServ.GetExistingCertificate(ar.Status.Id)
 		} else {
 			// Nothing to do
 			return nil, nil, nil
